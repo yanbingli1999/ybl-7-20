@@ -1,19 +1,24 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Plus, Trash2, Play, RefreshCw, BarChart3, AlertTriangle,
-  TrendingUp, Target, Layers, History, GitCompare, Pencil, X, Save,
-  Clock, DollarSign, Calendar, Settings, Info, Sparkles,
+  TrendingUp, Target, Layers, GitCompare, Pencil, X, Save,
+  Clock, DollarSign, Settings, LayoutGrid,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAppStore } from '@/store/useAppStore';
-import { formatNumber, formatPercentage } from '../../shared/monteCarlo.js';
-import type { VariableType, CreateVariableDto, UpdateVariableDto, SimulationResult } from '../../shared/types.js';
+import { useDashboardConfig, DEFAULT_LAYOUT } from '@/hooks/useDashboardConfig';
+import { formatNumber } from '../../shared/monteCarlo.js';
+import type { VariableType, CreateVariableDto, UpdateVariableDto } from '../../shared/types.js';
 import HistogramChart from '@/components/HistogramChart';
 import SensitivityChart from '@/components/SensitivityChart';
-import StatsCards from '@/components/StatsCards';
 import SimulationHistory from '@/components/SimulationHistory';
+import HistoryTrend from '@/components/HistoryTrend';
 import CompareModal from '@/components/CompareModal';
+import DashboardSettings from '@/components/DashboardSettings';
+import MeanWidget from '@/components/widgets/MeanWidget';
+import P90Widget from '@/components/widgets/P90Widget';
+import LossProbWidget from '@/components/widgets/LossProbWidget';
 
 const VARIABLE_TYPE_CONFIG: Record<VariableType, { label: string; color: string; icon: any; defaultWeight: number; defaultUnit: string }> = {
   cost: { label: '成本', color: 'bg-red-500/20 text-red-300 border-red-500/40', icon: DollarSign, defaultWeight: -1, defaultUnit: '万元' },
@@ -30,6 +35,7 @@ export default function ProjectDetail() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showVarModal, setShowVarModal] = useState(false);
   const [showCompareModal, setShowCompareModal] = useState(false);
+  const [showDashboardSettings, setShowDashboardSettings] = useState(false);
   const [running, setRunning] = useState(false);
   const [iterations, setIterations] = useState(10000);
   const [threshold, setThreshold] = useState(0);
@@ -39,6 +45,8 @@ export default function ProjectDetail() {
     name: '', type: 'custom' as VariableType, min: '', max: '', mostLikely: '', weight: '', unit: '',
   });
   const [editForm, setEditForm] = useState<Partial<any>>({});
+
+  const { layout, visibleWidgets, toggleWidget, reorderWidgets, setLayout } = useDashboardConfig(id);
 
   const loadProject = async () => {
     setLoading(true);
@@ -159,15 +167,6 @@ export default function ProjectDetail() {
     }
   };
 
-  const riskLevel = useMemo(() => {
-    if (!currentSimulation) return null;
-    const p = currentSimulation.lossProbability;
-    if (p < 0.1) return { level: '低风险', color: 'text-monte-safe', bg: 'bg-monte-safe/15', border: 'border-monte-safe/40', icon: Sparkles };
-    if (p < 0.3) return { level: '中低风险', color: 'text-emerald-300', bg: 'bg-emerald-500/15', border: 'border-emerald-500/40', icon: Info };
-    if (p < 0.5) return { level: '中等风险', color: 'text-monte-warn', bg: 'bg-monte-warn/15', border: 'border-monte-warn/40', icon: AlertTriangle };
-    return { level: '高风险', color: 'text-monte-danger', bg: 'bg-monte-danger/15', border: 'border-monte-danger/40', icon: AlertTriangle };
-  }, [currentSimulation]);
-
   if (!currentProject) {
     return <div className="flex items-center justify-center h-screen"><div className="text-monte-muted">加载中...</div></div>;
   }
@@ -190,6 +189,10 @@ export default function ProjectDetail() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <button onClick={() => setShowDashboardSettings(true)} className="btn-secondary text-sm" title="仪表盘设置">
+                <LayoutGrid className="w-4 h-4" />
+                仪表盘
+              </button>
               <button onClick={() => setShowCompareModal(true)} className="btn-secondary text-sm" disabled={simulations.length < 2}>
                 <GitCompare className="w-4 h-4" />
                 对比
@@ -442,80 +445,32 @@ export default function ProjectDetail() {
               </div>
             ) : (
               <>
-                <div className={`card border-2 ${riskLevel?.border}`}>
-                  <div className="flex items-center justify-between mb-5">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2.5 rounded-xl ${riskLevel?.bg}`}>
-                        {riskLevel?.icon && <riskLevel.icon className={`w-6 h-6 ${riskLevel.color}`} />}
-                      </div>
-                      <div>
-                        <div className="text-sm text-monte-muted mb-0.5">当前风险评估</div>
-                        <div className={`text-xl font-bold ${riskLevel?.color}`}>{riskLevel?.level}</div>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs text-monte-muted mb-0.5">模拟名称</div>
-                      <div className="text-sm font-medium text-white">{currentSimulation.runName}</div>
-                      <div className="text-xs text-monte-muted mt-0.5 flex items-center justify-end gap-1">
-                        <Clock className="w-3 h-3" />
-                        {new Date(currentSimulation.timestamp).toLocaleString('zh-CN')}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-4 mb-5">
-                    <div className="p-4 rounded-xl bg-gradient-to-br from-monte-danger/15 to-transparent border border-monte-danger/30">
-                      <div className="text-xs text-monte-muted uppercase tracking-wider mb-1">亏损概率</div>
-                      <div className="text-3xl font-bold font-mono text-monte-danger">{formatPercentage(currentSimulation.lossProbability)}</div>
-                      <div className="text-xs text-monte-muted mt-1">低于阈值 {formatNumber(currentSimulation.threshold, 0)}</div>
-                    </div>
-                    <div className="p-4 rounded-xl bg-gradient-to-br from-monte-warn/15 to-transparent border border-monte-warn/30">
-                      <div className="text-xs text-monte-muted uppercase tracking-wider mb-1">95% VaR</div>
-                      <div className="text-3xl font-bold font-mono text-monte-warn">{formatNumber(currentSimulation.var95)}</div>
-                      <div className="text-xs text-monte-muted mt-1">最坏5%情景下的净值</div>
-                    </div>
-                    <div className="p-4 rounded-xl bg-gradient-to-br from-monte-safe/15 to-transparent border border-monte-safe/30">
-                      <div className="text-xs text-monte-muted uppercase tracking-wider mb-1">期望净现值</div>
-                      <div className={`text-3xl font-bold font-mono ${currentSimulation.mean >= 0 ? 'text-monte-safe' : 'text-monte-danger'}`}>
-                        {currentSimulation.mean >= 0 ? '+' : ''}{formatNumber(currentSimulation.mean)}
-                      </div>
-                      <div className="text-xs text-monte-muted mt-1">标准差 ±{formatNumber(currentSimulation.stdDev)}</div>
-                    </div>
-                  </div>
-
-                  <StatsCards sim={currentSimulation} />
-                </div>
-
-                <HistogramChart sim={currentSimulation} />
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <SensitivityChart sim={currentSimulation} />
-                  <div className="card">
-                    <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                      <Info className="w-5 h-5 text-monte-accent" />
-                      分位数详情
-                    </h3>
-                    <div className="space-y-3">
-                      {[
-                        { k: 'p5', label: '5% 分位数 (悲观)', color: 'text-monte-danger', desc: '95% 概率结果高于此值' },
-                        { k: 'p25', label: '25% 分位数 (保守)', color: 'text-monte-warn', desc: '75% 概率结果高于此值' },
-                        { k: 'p50', label: '50% 分位数 (中位)', color: 'text-monte-accent', desc: '最可能的中位数结果' },
-                        { k: 'p75', label: '75% 分位数 (乐观)', color: 'text-emerald-400', desc: '25% 概率结果高于此值' },
-                        { k: 'p95', label: '95% 分位数 (最佳)', color: 'text-monte-safe', desc: '5% 概率结果高于此值' },
-                      ].map((p: any) => (
-                        <div key={p.k} className="flex items-center justify-between p-3 rounded-lg bg-monte-bg/50 border border-monte-border/50">
-                          <div className="flex-1">
-                            <div className={`text-sm font-medium ${p.color}`}>{p.label}</div>
-                            <div className="text-xs text-monte-muted">{p.desc}</div>
-                          </div>
-                          <div className={`text-2xl font-bold font-mono ${p.color}`}>
-                            {formatNumber((currentSimulation.percentiles as any)[p.k])}
-                          </div>
-                        </div>
-                      ))}
+                <div className="card">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2 text-sm text-monte-muted">
+                      <Clock className="w-3.5 h-3.5" />
+                      {currentSimulation.runName} · {new Date(currentSimulation.timestamp).toLocaleString('zh-CN')}
                     </div>
                   </div>
                 </div>
+                {visibleWidgets.map(w => {
+                  switch (w.key) {
+                    case 'lossProb':
+                      return <LossProbWidget key={w.key} sim={currentSimulation} />;
+                    case 'mean':
+                      return <MeanWidget key={w.key} sim={currentSimulation} />;
+                    case 'p90':
+                      return <P90Widget key={w.key} sim={currentSimulation} />;
+                    case 'histogram':
+                      return <HistogramChart key={w.key} sim={currentSimulation} />;
+                    case 'sensitivity':
+                      return <SensitivityChart key={w.key} sim={currentSimulation} />;
+                    case 'trend':
+                      return <HistoryTrend key={w.key} simulations={simulations} />;
+                    default:
+                      return null;
+                  }
+                })}
               </>
             )}
           </section>
@@ -656,6 +611,16 @@ export default function ProjectDetail() {
           projectId={id}
           onClose={() => setShowCompareModal(false)}
           onCreated={(compareId) => navigate(`/project/${id}/compare/${compareId}`)}
+        />
+      )}
+
+      {showDashboardSettings && (
+        <DashboardSettings
+          layout={layout}
+          onToggle={toggleWidget}
+          onReorder={reorderWidgets}
+          onReset={() => setLayout(() => DEFAULT_LAYOUT)}
+          onClose={() => setShowDashboardSettings(false)}
         />
       )}
     </div>
